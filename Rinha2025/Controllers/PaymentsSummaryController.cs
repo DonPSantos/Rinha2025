@@ -24,7 +24,7 @@ namespace Rinha2025.Controllers
             var dlist = await db.HashGetAllAsync("pagamentos-processados-default");
             var flist = await db.HashGetAllAsync("pagamentos-processados-fallback");
 
-            return Ok(new GetPaymentsSummaryResult(dlist, flist));
+            return Ok(new GetPaymentsSummaryResult(dlist, flist, request.from, request.to));
         }
     }
 }
