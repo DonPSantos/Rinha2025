@@ -1,0 +1,83 @@
+services:
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - backnet
+    depends_on:
+      - api-1
+      - api-2
+    deploy:
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: "20MB"
+
+  api-1:
+    build:
+      context: ./Rinha2025
+    container_name: api-1
+    ports:
+      - "7001:8080"
+    networks:
+      - backnet
+    environment:
+      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
+      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
+      - WORKER_NAME=POTATO
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.6"
+          memory: "150MB"
+
+  api-2:
+    build:
+      context: ./Rinha2025
+    container_name: api-2
+    ports:
+      - "7002:8080"
+    networks:
+      - backnet
+    environment:
+      - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
+      - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
+      - WORKER_NAME=TOMATO
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: "0.6"
+          memory: "150MB"
+  
+  redis:
+    image: redis:alpine
+    container_name: redis
+    command: redis-server --save "" --appendonly no --maxclients 20000
+    ports:
+      - "6379:6379"
+    networks:
+      - backnet
+    healthcheck:
+      test: ["CMD", "redis-cli","ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: "30MB"
+
+networks:
+  backnet:
+    driver: bridge
+  paymentat-processor:
+    external: true
