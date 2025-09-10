@@ -25,10 +25,12 @@ services:
       - "7001:8080"
     networks:
       - backnet
+      - payment-processor
     environment:
       - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
       - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
       - WORKER_NAME=POTATO
+      - REDIS_CONNECTION=redis:6379,abortConnect=false
     depends_on:
       - redis
     deploy:
@@ -45,10 +47,12 @@ services:
       - "7002:8080"
     networks:
       - backnet
+      - payment-processor
     environment:
       - PROCESSOR_DEFAULT_URL=http://payment-processor-default:8080
       - PROCESSOR_FALLBACK_URL=http://payment-processor-fallback:8080
       - WORKER_NAME=TOMATO
+      - REDIS_CONNECTION=redis:6379,abortConnect=false
     depends_on:
       - redis
     deploy:
@@ -79,5 +83,5 @@ services:
 networks:
   backnet:
     driver: bridge
-  paymentat-processor:
+  payment-processor:
     external: true

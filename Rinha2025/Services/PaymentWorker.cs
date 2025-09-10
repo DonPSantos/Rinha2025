@@ -2,7 +2,7 @@
 using Rinha2025.DTO;
 using StackExchange.Redis;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Threading.Channels;
 
 namespace Rinha2025.Services
 {
@@ -10,84 +10,51 @@ namespace Rinha2025.Services
     {
         private readonly PaymentProcessorDefaultClient _ppdClient;
         private readonly PaymentProcessorFallbackClient _ppfClient;
-        private readonly IConnectionMultiplexer _redis;
-        private const string StreamName = "fila-pagamentos";
-        private const string ConsumerGroupName = "processadores";
-        private readonly string ConsumerName = Environment.GetEnvironmentVariable("WORKER_NAME");
+        private readonly ChannelReader<ProcessorRequest> _reader;
+        private readonly ChannelWriter<ProcessorRequest> _writer;
+        private readonly IDatabase _db;
 
-        public PaymentWorker(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, IConnectionMultiplexer redis)
+        public PaymentWorker(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, ChannelReader<ProcessorRequest> reader, ChannelWriter<ProcessorRequest> writer, IDatabase db)
         {
             _ppdClient = ppdClient;
             _ppfClient = ppfClient;
-            _redis = redis;
+            _reader = reader;
+            _writer = writer;
+            _db = db;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (true)
+            while (!stoppingToken.IsCancellationRequested)
             {
-                try
+                ProcessorRequest request;
+
+                if (_reader.TryRead(out request))
                 {
-                    var db = _redis.GetDatabase();
+                    var resultDefault = await _ppdClient.PostPayment(request);
 
-                    StreamEntry[] mensagens;
-
-                    mensagens = await db.StreamReadGroupAsync(
-                        StreamName,
-                        ConsumerGroupName,
-                        ConsumerName,
-                        StreamPosition.Beginning,
-                        count: 1
-                    );
-
-                    if (mensagens.Length == 0)
+                    if (resultDefault.IsSuccessStatusCode)
                     {
-                        mensagens = await db.StreamReadGroupAsync(
-                            StreamName,
-                            ConsumerGroupName,
-                            ConsumerName,
-                            StreamPosition.NewMessages,
-                            count: 1
-                        );
+                        _db.HashSet("pagamentos-processados-default", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(request))]);
                     }
-
-                    if (mensagens.Length > 0)
+                    else
                     {
-                        var request = ConverterStreamEntry(mensagens[0]);
-
-                        var resultDefault = await _ppdClient.PostPayment(request);
-
-                        if (resultDefault.IsSuccessStatusCode)
+                        var resultFallback = await _ppfClient.PostPayment(request);
+                        if (resultFallback.IsSuccessStatusCode)
                         {
-                            db.HashSet("pagamentos-processados-default", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(request))]);
-                            await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, mensagens[0].Id);
+                            _db.HashSet("pagamentos-processados-fallback", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(request))]);
                         }
                         else
                         {
-                            var resultFallback = await _ppfClient.PostPayment(request);
-                            if (resultFallback.IsSuccessStatusCode)
-                            {
-                                db.HashSet("pagamentos-processados-fallback", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(request))]);
-                                await db.StreamAcknowledgeAsync(StreamName, ConsumerGroupName, mensagens[0].Id);
-                            }
+                            _writer.TryWrite(request);
                         }
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    Console.WriteLine($"Erro ao processar pagamento: {ex.Message}");
+                    await Task.Delay(1000, stoppingToken);
                 }
             }
-        }
-
-        private ProcessorRequest ConverterStreamEntry(StreamEntry streamEntry)
-        {
-            return new ProcessorRequest
-            {
-                CorrelationId = Guid.Parse(streamEntry["CorrelationId"]),
-                Amount = decimal.Parse(streamEntry["Amount"]),
-                RequestedAt = DateTime.Parse(streamEntry["RequestedAt"])
-            };
         }
     }
 }

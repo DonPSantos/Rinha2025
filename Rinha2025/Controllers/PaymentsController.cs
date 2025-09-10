@@ -1,24 +1,18 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Rinha2025.Clients;
 using Rinha2025.DTO;
 using Rinha2025.Models;
-using StackExchange.Redis;
+using System.Threading.Channels;
 
 namespace Rinha2025.Controllers
 {
     [Route("payments")]
     public class PaymentsController : ControllerBase
     {
-        private readonly PaymentProcessorDefaultClient _ppdClient;
-        private readonly PaymentProcessorFallbackClient _ppfClient;
-        private readonly IConnectionMultiplexer _redis;
-        private const string StreamName = "fila-pagamentos";
+        private readonly ChannelWriter<ProcessorRequest> _writer;
 
-        public PaymentsController(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, IConnectionMultiplexer redis)
+        public PaymentsController(ChannelWriter<ProcessorRequest> writer)
         {
-            _ppdClient = ppdClient;
-            _ppfClient = ppfClient;
-            _redis = redis;
+            _writer = writer;
         }
 
         [HttpPost]
@@ -30,13 +24,8 @@ namespace Rinha2025.Controllers
                 CorrelationId = request.CorrelationId,
                 RequestedAt = DateTime.UtcNow
             };
-            var db = _redis.GetDatabase();
-            var id = await db.StreamAddAsync(StreamName, new NameValueEntry[]
-            {
-                new NameValueEntry("CorrelationId", processorRequest.CorrelationId.ToString()),
-                new NameValueEntry("Amount", processorRequest.Amount.ToString()),
-                new NameValueEntry("RequestedAt", processorRequest.RequestedAt.ToString("o"))
-            });
+
+            await _writer.WriteAsync(processorRequest);
 
             return Ok("Payments");
         }

@@ -25,7 +25,8 @@ namespace Rinha2025.Clients
         {
             var url = "payments";
 
-            return await _pipeline.ExecuteAsync(async token => await _http.PostAsJsonAsync(url, request));
+            //return await _pipeline.ExecuteAsync(async token => await _http.PostAsJsonAsync(url, request));
+            return await _http.PostAsJsonAsync(url, request);
         }
     }
 }
