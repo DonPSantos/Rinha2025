@@ -1,8 +1,10 @@
-﻿using Rinha2025.Clients;
+﻿using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
+using Rinha2025.Clients;
 using Rinha2025.DTO;
 using StackExchange.Redis;
+using System.Text;
 using System.Text.Json;
-using System.Threading.Channels;
 
 namespace Rinha2025.Services
 {
@@ -10,51 +12,100 @@ namespace Rinha2025.Services
     {
         private readonly PaymentProcessorDefaultClient _ppdClient;
         private readonly PaymentProcessorFallbackClient _ppfClient;
-        private readonly ChannelReader<ProcessorRequest> _reader;
-        private readonly ChannelWriter<ProcessorRequest> _writer;
         private readonly IDatabase _db;
+        private IConnection _connection;
+        private IChannel _channel;
 
-        public PaymentWorker(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, ChannelReader<ProcessorRequest> reader, ChannelWriter<ProcessorRequest> writer, IDatabase db)
+        public PaymentWorker(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, IDatabase db)
         {
             _ppdClient = ppdClient;
             _ppfClient = ppfClient;
-            _reader = reader;
-            _writer = writer;
             _db = db;
+        }
+
+        public override async Task StartAsync(CancellationToken cancellationToken)
+        {
+            var factory = new ConnectionFactory
+            {
+                HostName = "host-rabbit",
+                UserName = "guest",
+                Password = "guest",
+                Port = 5672,
+                VirtualHost = "/",
+                RequestedConnectionTimeout = TimeSpan.FromSeconds(10),
+            };
+            _connection = await factory.CreateConnectionAsync();
+            _channel = await _connection.CreateChannelAsync();
+            await _channel.QueueDeclareAsync(queue: "payment_queue",
+                         durable: false,
+                         exclusive: false,
+                         autoDelete: false,
+                         arguments: null);
+
+            await base.StartAsync(cancellationToken);
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!stoppingToken.IsCancellationRequested)
+
+            var consumer = new AsyncEventingBasicConsumer(_channel);
+
+            consumer.ReceivedAsync += async (_, ea) =>
             {
-                ProcessorRequest request;
+                var body = ea.Body.ToArray();
+                var message = Encoding.UTF8.GetString(body);
+                var processorRequest = JsonSerializer.Deserialize<ProcessorRequest>(message);
 
-                if (_reader.TryRead(out request))
+                Console.WriteLine("Tentando o default");
+                var responseDefault = await _ppdClient.PostPayment(processorRequest);
+                if (responseDefault.StatusCode == System.Net.HttpStatusCode.OK)
                 {
-                    var resultDefault = await _ppdClient.PostPayment(request);
-
-                    if (resultDefault.IsSuccessStatusCode)
-                    {
-                        _db.HashSet("pagamentos-processados-default", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(request))]);
-                    }
-                    else
-                    {
-                        var resultFallback = await _ppfClient.PostPayment(request);
-                        if (resultFallback.IsSuccessStatusCode)
-                        {
-                            _db.HashSet("pagamentos-processados-fallback", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(request))]);
-                        }
-                        else
-                        {
-                            _writer.TryWrite(request);
-                        }
-                    }
+                    _db.HashSet("pagamentos-processados-default", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(processorRequest))]);
+                    await _channel.BasicAckAsync(
+                                    deliveryTag: ea.DeliveryTag,
+                                    multiple: false);
+                    Console.WriteLine("Deu certo no default");
                 }
                 else
                 {
-                    await Task.Delay(1000, stoppingToken);
+                    Console.WriteLine("Deu erro no default, tentando o fallback");
+                    var responseFallback = await _ppfClient.PostPayment(processorRequest);
+                    if (responseFallback.StatusCode == System.Net.HttpStatusCode.OK)
+                    {
+                        _db.HashSet("pagamentos-processados-fallback", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(processorRequest))]);
+                        await _channel.BasicAckAsync(
+                                deliveryTag: ea.DeliveryTag,
+                                multiple: false);
+                        Console.WriteLine("Deu certo no fallback");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Deu erro nos 2");
+                        await _channel.BasicNackAsync(
+                                deliveryTag: ea.DeliveryTag,
+                                multiple: false,
+                                requeue: true);
+                        Console.WriteLine("Reenfileirado");
+                    }
                 }
+
+                Console.WriteLine(" [x] Received {0}", message);
+            };
+
+            await _channel.BasicConsumeAsync(queue: "payment_queue",
+                                     autoAck: false,
+                                     consumer: consumer);
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await Task.Delay(1000, stoppingToken);
             }
+        }
+        public override async Task StopAsync(CancellationToken cancellationToken)
+        {
+            _channel?.CloseAsync();
+            _connection?.CloseAsync();
+            await base.StopAsync(cancellationToken);
         }
     }
 }

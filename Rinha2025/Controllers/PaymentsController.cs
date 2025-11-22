@@ -1,18 +1,18 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Rinha2025.DTO;
 using Rinha2025.Models;
-using System.Threading.Channels;
+using Rinha2025.Repositories;
 
 namespace Rinha2025.Controllers
 {
     [Route("payments")]
     public class PaymentsController : ControllerBase
     {
-        private readonly ChannelWriter<ProcessorRequest> _writer;
+        private readonly IRabbitRepository _repository;
 
-        public PaymentsController(ChannelWriter<ProcessorRequest> writer)
+        public PaymentsController(IRabbitRepository repository)
         {
-            _writer = writer;
+            _repository = repository;
         }
 
         [HttpPost]
@@ -25,7 +25,7 @@ namespace Rinha2025.Controllers
                 RequestedAt = DateTime.UtcNow
             };
 
-            await _writer.WriteAsync(processorRequest);
+            await _repository.CriarMensagem(processorRequest);
 
             return Ok("Payments");
         }

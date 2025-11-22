@@ -11,11 +11,11 @@ services:
     depends_on:
       - api-1
       - api-2
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: "20MB"
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.25"
+    #       memory: "20MB"
 
   api-1:
     build:
@@ -33,11 +33,12 @@ services:
       - REDIS_CONNECTION=redis:6379,abortConnect=false
     depends_on:
       - redis
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "150MB"
+      - rabbitmq
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.5"
+    #       memory: "150MB"
 
   api-2:
     build:
@@ -55,12 +56,13 @@ services:
       - REDIS_CONNECTION=redis:6379,abortConnect=false
     depends_on:
       - redis
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "150MB"
-  
+      - rabbitmq
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.5"
+    #       memory: "150MB"
+
   redis:
     image: redis:alpine
     container_name: redis
@@ -70,15 +72,34 @@ services:
     networks:
       - backnet
     healthcheck:
-      test: ["CMD", "redis-cli","ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: "30MB"
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.25"
+    #       memory: "30MB"
+
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    container_name: rabbitmq
+    hostname: host-rabbit
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_NODENAME: rabbit@host-rabbit
+    networks:
+      - backnet
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 5s
+      timeout: 30s
+      retries: 5
 
 networks:
   backnet:
