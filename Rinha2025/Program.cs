@@ -1,24 +1,11 @@
-using Polly;
-using Polly.CircuitBreaker;
+using Microsoft.AspNetCore.Mvc;
+using Rinha2025;
 using Rinha2025.Clients;
-using Rinha2025.Repositories;
+using Rinha2025.DTO;
+using Rinha2025.Models;
 using Rinha2025.Services;
-using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Add services to the container.
-
-builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-//builder.Services.AddOpenApi();
-
-builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(Environment.GetEnvironmentVariable("REDIS_CONNECTION")));
-builder.Services.AddSingleton<IDatabase>(provider =>
-{
-    var multiplexer = provider.GetRequiredService<IConnectionMultiplexer>();
-    return multiplexer.GetDatabase();
-});
 
 builder.Services.AddHttpClient<PaymentProcessorDefaultClient>(client =>
 {
@@ -32,30 +19,38 @@ builder.Services.AddHttpClient<PaymentProcessorFallbackClient>(client =>
     client.DefaultRequestHeaders.Add("Accept", "application/json");
 });
 
-builder.Services.AddResiliencePipeline("circuit-pipeline", builder =>
-{
-    builder.AddCircuitBreaker(new CircuitBreakerStrategyOptions
-    {
-        BreakDuration = TimeSpan.FromSeconds(5),
-        MinimumThroughput = 2,
-        ShouldHandle = new PredicateBuilder().Handle<HttpRequestException>()
-    });
-});
-
-builder.Services.AddScoped<IRabbitRepository, RabbitRepository>();
-
+builder.Services.AddSingleton<PaymentQueue>();
+builder.Services.AddSingleton<PaymentRepository>();
 builder.Services.AddHostedService<PaymentWorker>();
 
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
-//app.MapOpenApi();
+app.MapHealthChecks("/health");
 
-app.MapHealthChecks("/healthz");
+app.MapPost("/payments", ([FromBody] PostPaymentsRequest request, [FromServices] PaymentQueue queue) =>
+{
+    var processorRequest = new ProcessorRequest
+    {
+        Amount = request.Amount,
+        CorrelationId = request.CorrelationId,
+        RequestedAt = DateTime.UtcNow
+    };
 
-//app.UseAuthorization();
+    queue.Enqueue(processorRequest);
 
-app.MapControllers();
+    return Results.Ok("Payments");
+});
+
+app.MapGet("/payments-summary", ([FromQuery] DateTime from, [FromQuery] DateTime to, [FromServices] PaymentRepository repository) =>
+{
+});
+
+var dataDir = Path.Combine(Directory.GetCurrentDirectory(), "Data");
+if (!Directory.Exists(dataDir))
+{
+    Directory.CreateDirectory(dataDir);
+}
 
 app.Run();

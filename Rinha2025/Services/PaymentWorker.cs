@@ -1,10 +1,5 @@
-﻿using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
+﻿using Microsoft.Data.Sqlite;
 using Rinha2025.Clients;
-using Rinha2025.DTO;
-using StackExchange.Redis;
-using System.Text;
-using System.Text.Json;
 
 namespace Rinha2025.Services
 {
@@ -12,100 +7,81 @@ namespace Rinha2025.Services
     {
         private readonly PaymentProcessorDefaultClient _ppdClient;
         private readonly PaymentProcessorFallbackClient _ppfClient;
-        private readonly IDatabase _db;
-        private IConnection _connection;
-        private IChannel _channel;
+        private readonly PaymentQueue _queue;
+        private readonly PaymentRepository _paymentRepository;
 
-        public PaymentWorker(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, IDatabase db)
+        public PaymentWorker(PaymentProcessorDefaultClient ppdClient, PaymentProcessorFallbackClient ppfClient, PaymentQueue queue, PaymentRepository paymentRepository)
         {
             _ppdClient = ppdClient;
             _ppfClient = ppfClient;
-            _db = db;
+            _queue = queue;
+            _paymentRepository = paymentRepository;
         }
 
         public override async Task StartAsync(CancellationToken cancellationToken)
         {
-            var factory = new ConnectionFactory
-            {
-                HostName = "host-rabbit",
-                UserName = "guest",
-                Password = "guest",
-                Port = 5672,
-                VirtualHost = "/",
-                RequestedConnectionTimeout = TimeSpan.FromSeconds(10),
-            };
-            _connection = await factory.CreateConnectionAsync();
-            _channel = await _connection.CreateChannelAsync();
-            await _channel.QueueDeclareAsync(queue: "payment_queue",
-                         durable: false,
-                         exclusive: false,
-                         autoDelete: false,
-                         arguments: null);
+            using var connection = new SqliteConnection($"Data Source={Environment.GetEnvironmentVariable("DB_PATH")}");
 
-            await base.StartAsync(cancellationToken);
+            connection.Open();
+
+            var command = connection.CreateCommand();
+
+            command.CommandText = """
+                CREATE TABLE paymentDefault (
+                    CorrelationDd TEXT NOT NULL PRIMARY KEY,
+                    Amount REAL NOT NULL,
+                    RequestedAt TEXT NOT NULL
+                );
+            """;
+            command.ExecuteNonQuery();
+
+            command.CommandText = """
+                CREATE TABLE paymentFallback (
+                    CorrelationDd TEXT NOT NULL PRIMARY KEY,
+                    Amount REAL NOT NULL,
+                    RequestedAt TEXT NOT NULL
+                );
+            """;
+            command.ExecuteNonQuery();
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-
-            var consumer = new AsyncEventingBasicConsumer(_channel);
-
-            consumer.ReceivedAsync += async (_, ea) =>
-            {
-                var body = ea.Body.ToArray();
-                var message = Encoding.UTF8.GetString(body);
-                var processorRequest = JsonSerializer.Deserialize<ProcessorRequest>(message);
-
-                Console.WriteLine("Tentando o default");
-                var responseDefault = await _ppdClient.PostPayment(processorRequest);
-                if (responseDefault.StatusCode == System.Net.HttpStatusCode.OK)
-                {
-                    _db.HashSet("pagamentos-processados-default", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(processorRequest))]);
-                    await _channel.BasicAckAsync(
-                                    deliveryTag: ea.DeliveryTag,
-                                    multiple: false);
-                    Console.WriteLine("Deu certo no default");
-                }
-                else
-                {
-                    Console.WriteLine("Deu erro no default, tentando o fallback");
-                    var responseFallback = await _ppfClient.PostPayment(processorRequest);
-                    if (responseFallback.StatusCode == System.Net.HttpStatusCode.OK)
-                    {
-                        _db.HashSet("pagamentos-processados-fallback", [new HashEntry(Guid.NewGuid().ToString(), JsonSerializer.Serialize(processorRequest))]);
-                        await _channel.BasicAckAsync(
-                                deliveryTag: ea.DeliveryTag,
-                                multiple: false);
-                        Console.WriteLine("Deu certo no fallback");
-                    }
-                    else
-                    {
-                        Console.WriteLine("Deu erro nos 2");
-                        await _channel.BasicNackAsync(
-                                deliveryTag: ea.DeliveryTag,
-                                multiple: false,
-                                requeue: true);
-                        Console.WriteLine("Reenfileirado");
-                    }
-                }
-
-                Console.WriteLine(" [x] Received {0}", message);
-            };
-
-            await _channel.BasicConsumeAsync(queue: "payment_queue",
-                                     autoAck: false,
-                                     consumer: consumer);
+            var reader = _queue.Reader;
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                await Task.Delay(1000, stoppingToken);
+                if (!await reader.WaitToReadAsync(stoppingToken))
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                }
+                else
+                {
+                    reader.TryRead(out var processorRequest);
+                    var responseDefault = await _ppdClient.PostPayment(processorRequest);
+                    if (responseDefault.StatusCode == System.Net.HttpStatusCode.OK)
+                    {
+                        await _paymentRepository.SaveDefault(processorRequest);
+                        Console.WriteLine("Deu certo no default");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Deu erro no default, tentando o fallback");
+                        var responseFallback = await _ppfClient.PostPayment(processorRequest);
+                        if (responseFallback.StatusCode == System.Net.HttpStatusCode.OK)
+                        {
+                            await _paymentRepository.SaveFallback(processorRequest);
+                            Console.WriteLine("Deu certo no fallback");
+                        }
+                        else
+                        {
+                            Console.WriteLine("Deu erro nos 2");
+                            await _queue.Enqueue(processorRequest);
+                            Console.WriteLine("Reenfileirado");
+                        }
+                    }
+                }
             }
-        }
-        public override async Task StopAsync(CancellationToken cancellationToken)
-        {
-            _channel?.CloseAsync();
-            _connection?.CloseAsync();
-            await base.StopAsync(cancellationToken);
         }
     }
 }

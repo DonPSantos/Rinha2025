@@ -15,7 +15,8 @@
         "PROCESSOR_DEFAULT_URL": "http://localhost:8001",
         "PROCESSOR_FALLBACK_URL": "http://localhost:8002",
         "WORKER_NAME": "TOMATO",
-        "REDIS_CONNECTION": "localhost:6379"
+        "REDIS_CONNECTION": "localhost:6379",
+        "DB_PATH": "Data/mydb.db"
       },
       "dotnetRunMessages": true,
       "applicationUrl": "https://localhost:7035;http://localhost:5077"

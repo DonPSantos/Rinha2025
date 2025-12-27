@@ -1,18 +1,14 @@
-﻿using Polly;
-using Polly.Registry;
-using Rinha2025.DTO;
+﻿using Rinha2025.DTO;
 
 namespace Rinha2025.Clients
 {
     public class PaymentProcessorDefaultClient : IPaymentProcessor
     {
         private readonly HttpClient _http;
-        private readonly ResiliencePipeline _pipeline;
 
-        public PaymentProcessorDefaultClient(HttpClient http, ResiliencePipelineProvider<string> pipelineProvider)
+        public PaymentProcessorDefaultClient(HttpClient http)
         {
             _http = http;
-            _pipeline = pipelineProvider.GetPipeline("circuit-pipeline");
         }
 
         public async Task<HealthCheckResult> GetHealthCheckResult()
@@ -24,8 +20,6 @@ namespace Rinha2025.Clients
         public async Task<HttpResponseMessage> PostPayment(ProcessorRequest request)
         {
             var url = "payments";
-
-            //return await _pipeline.ExecuteAsync(async token => await _http.PostAsJsonAsync(url, request));
             return await _http.PostAsJsonAsync(url, request);
         }
     }
